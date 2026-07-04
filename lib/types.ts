@@ -25,6 +25,26 @@ export type Pagamento = {
   cotacao_ars_brl?: number | null;
 };
 
+export type OrcamentoStatus = "rascunho" | "enviado" | "aprovado" | "recusado";
+
+export type Orcamento = {
+  id: string;
+  numero: string;
+  cliente_nome: string;
+  cliente_email: string | null;
+  cliente_telefone: string | null;
+  template: "l2connect" | "l2connect-ar" | "zamy";
+  idioma: "pt" | "es";
+  moeda: "BRL" | "ARS" | "USD";
+  cotacao_dolar: number | null;
+  total: number;
+  plano_pagamento: unknown | null;
+  servicos: { descricao: string; valor: number }[];
+  nota: string | null;
+  status: OrcamentoStatus;
+  created_at: string;
+};
+
 export type GastoMoeda = "BRL" | "USD";
 export type GastoTipo = "recorrente" | "avulso";
 

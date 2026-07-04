@@ -1,5 +1,5 @@
-import { OrcamentosManager } from "@/components/dashboard/orcamentos-manager";
+import { OrcamentosHistorico } from "@/components/dashboard/orcamentos-historico";
 
 export default function OrcamentosPage() {
-  return <OrcamentosManager />;
+  return <OrcamentosHistorico />;
 }

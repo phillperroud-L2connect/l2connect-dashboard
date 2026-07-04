@@ -1,21 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, Trash2, FileDown, Eye } from "lucide-react";
+import Link from "next/link";
+import { Plus, Trash2, FileDown, Eye, Save, History } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import type { Cliente } from "@/lib/types";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  OrcamentoPreview,
+  gerarPdfDoElemento,
+  type Template,
+  type Idioma,
+  type MoedaOrc,
+  type PlanoPagamento,
+  type TipoParcelamento,
+  type OpcaoPagamento,
+  type OrcamentoData,
+} from "@/components/dashboard/orcamento-preview";
 
-type Template = "l2connect" | "zamy" | "l2connect-ar";
-type Idioma = "pt" | "es";
-type MoedaOrc = "BRL" | "ARS" | "USD";
-
-// ── Pagamento ── (mesmo escopo do SaaS Gerador de Orçamento)
-type OpcaoPagamento = "avista" | "entrada" | "parcelado";
-type TipoParcelamento = "iguais" | "entrada_diferenciada";
 type TipoEntrada = "percentual" | "valor";
 
 type ServicoItem = {
@@ -35,11 +40,11 @@ type FormState = {
   nota: string;
   // ── Pagamento ──
   opcao_pagamento: OpcaoPagamento;
-  percentual_entrada: string; // opção "com entrada"
-  parcelas: string; // opção "parcelado" (2 a 12)
-  tipo_parcelamento: TipoParcelamento; // opção "parcelado"
-  entrada_tipo: TipoEntrada; // parcelado com entrada diferenciada
-  entrada_valor: string; // valor ou % da entrada diferenciada
+  percentual_entrada: string;
+  parcelas: string;
+  tipo_parcelamento: TipoParcelamento;
+  entrada_tipo: TipoEntrada;
+  entrada_valor: string;
 };
 
 const emptyForm: FormState = {
@@ -51,7 +56,6 @@ const emptyForm: FormState = {
   moeda: "BRL",
   servicos: [{ id: "1", descricao: "", valor: "" }],
   nota: "",
-  // Default: 50% entrada + 50% restante (comportamento atual)
   opcao_pagamento: "entrada",
   percentual_entrada: "50",
   parcelas: "2",
@@ -60,25 +64,11 @@ const emptyForm: FormState = {
   entrada_valor: "30",
 };
 
-/** Plano de pagamento calculado a partir do total e das escolhas do formulário. */
-type PlanoPagamento =
-  | { tipo: "avista" }
-  | { tipo: "entrada"; pct: number; entrada: number; restante: number }
-  | {
-      tipo: "parcelado";
-      n: number;
-      subtipo: TipoParcelamento;
-      parcelas: { numero: number; valor: number; entrada: boolean }[];
-    };
-
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
-/**
- * Converte total + escolhas do formulário num plano estruturado.
- * Espelha a lógica do SaaS Gerador de Orçamento (calcularPlano).
- */
+/** Converte total + escolhas do formulário num plano estruturado. */
 function calcularPlano(total: number, form: FormState): PlanoPagamento {
   if (form.opcao_pagamento === "entrada") {
     const pct = clamp(parseFloat(form.percentual_entrada) || 0, 0, 100);
@@ -128,349 +118,8 @@ function calcularPlano(total: number, form: FormState): PlanoPagamento {
   return { tipo: "avista" };
 }
 
-// Textos de pagamento (PT/ES) usados na prévia/PDF.
-type PagLabels = {
-  avista: string;
-  entradaPct: (p: number) => string;
-  restantePct: (p: number) => string;
-  doisPagamentosNota: string;
-  parceladoIguais: (n: number) => string;
-  parceladoEntradaDif: (n: number) => string;
-  entradaPrimeira: string;
-  parcelaN: (n: number) => string;
-};
-
-const PAG: Record<Idioma, PagLabels> = {
-  pt: {
-    avista: "Pagamento à vista",
-    entradaPct: (p) => `Entrada (${p}%)`,
-    restantePct: (p) => `Restante (${p}%)`,
-    doisPagamentosNota:
-      "* São 2 pagamentos separados: entrada e restante na entrega.",
-    parceladoIguais: (n) => `Parcelado em ${n}x iguais`,
-    parceladoEntradaDif: (n) => `Parcelado em ${n}x com entrada diferenciada`,
-    entradaPrimeira: "Entrada (1ª parcela)",
-    parcelaN: (n) => `Parcela ${n}`,
-  },
-  es: {
-    avista: "Pago al contado",
-    entradaPct: (p) => `Anticipo (${p}%)`,
-    restantePct: (p) => `Resto (${p}%)`,
-    doisPagamentosNota:
-      "* Son 2 pagos separados: anticipo y resto a la entrega.",
-    parceladoIguais: (n) => `En ${n} cuotas iguales`,
-    parceladoEntradaDif: (n) => `En ${n} cuotas con anticipo diferenciado`,
-    entradaPrimeira: "Anticipo (1ª cuota)",
-    parcelaN: (n) => `Cuota ${n}`,
-  },
-};
-
-/**
- * Bloco "Condições de Pagamento" reutilizável nos 3 templates.
- * Parametrizado pela cor de destaque, para evitar duplicação.
- */
-function CondicoesPagamento({
-  plano,
-  titulo,
-  labels,
-  total,
-  fmtValor,
-  usdRef,
-  cor,
-  corHeaderBg,
-  corBorda,
-  corCardBorda,
-  rodapeNota,
-}: {
-  plano: PlanoPagamento;
-  titulo: string;
-  labels: PagLabels;
-  total: number;
-  fmtValor: (v: number) => string;
-  usdRef: (v: number) => string | null;
-  cor: string;
-  corHeaderBg: string;
-  corBorda: string;
-  corCardBorda: string;
-  rodapeNota: string | null;
-}) {
-  const usdCell = (v: number) => {
-    const u = usdRef(v);
-    return u ? (
-      <div style={{ fontSize: "11px", color: "#888", marginTop: "4px" }}>
-        ≈ {u}
-      </div>
-    ) : null;
-  };
-
-  return (
-    <div
-      style={{
-        marginBottom: "24px",
-        border: `1px solid ${corBorda}`,
-        borderRadius: "8px",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          background: corHeaderBg,
-          padding: "10px 16px",
-          fontWeight: 700,
-          color: cor,
-          fontSize: "12px",
-          textTransform: "uppercase",
-          letterSpacing: "0.5px",
-        }}
-      >
-        {titulo}
-      </div>
-
-      <div style={{ padding: "16px" }}>
-        {plano.tipo === "avista" && (
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <span style={{ fontSize: "13px", color: "#555" }}>
-              {labels.avista}
-            </span>
-            <div style={{ textAlign: "right" }}>
-              <span style={{ fontSize: "22px", fontWeight: 800, color: cor }}>
-                {fmtValor(total)}
-              </span>
-              {usdCell(total)}
-            </div>
-          </div>
-        )}
-
-        {plano.tipo === "entrada" && (
-          <>
-            <div style={{ display: "flex", gap: "16px" }}>
-              <div
-                style={{
-                  flex: 1,
-                  textAlign: "center",
-                  background: "#fff",
-                  border: `1px solid ${corCardBorda}`,
-                  borderRadius: "8px",
-                  padding: "16px",
-                }}
-              >
-                <div
-                  style={{ fontSize: "11px", color: "#666", marginBottom: "4px" }}
-                >
-                  {labels.entradaPct(Number(plano.pct.toFixed(0)))}
-                </div>
-                <div style={{ fontSize: "20px", fontWeight: 800, color: cor }}>
-                  {fmtValor(plano.entrada)}
-                </div>
-                {usdCell(plano.entrada)}
-              </div>
-              <div
-                style={{
-                  flex: 1,
-                  textAlign: "center",
-                  background: "#fff",
-                  border: `1px solid ${corCardBorda}`,
-                  borderRadius: "8px",
-                  padding: "16px",
-                }}
-              >
-                <div
-                  style={{ fontSize: "11px", color: "#666", marginBottom: "4px" }}
-                >
-                  {labels.restantePct(Number((100 - plano.pct).toFixed(0)))}
-                </div>
-                <div style={{ fontSize: "20px", fontWeight: 800, color: cor }}>
-                  {fmtValor(plano.restante)}
-                </div>
-                {usdCell(plano.restante)}
-              </div>
-            </div>
-            <div
-              style={{
-                marginTop: "12px",
-                fontSize: "11px",
-                color: "#888",
-                textAlign: "center",
-              }}
-            >
-              {labels.doisPagamentosNota}
-            </div>
-          </>
-        )}
-
-        {plano.tipo === "parcelado" && (
-          <>
-            <div style={{ marginBottom: "10px", fontSize: "12px", color: "#555" }}>
-              {plano.subtipo === "entrada_diferenciada"
-                ? labels.parceladoEntradaDif(plano.n)
-                : labels.parceladoIguais(plano.n)}
-            </div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <tbody>
-                {plano.parcelas.map((p) => (
-                  <tr key={p.numero}>
-                    <td
-                      style={{
-                        padding: "8px 12px",
-                        borderBottom: "1px solid #eee",
-                        fontSize: "12px",
-                        color: "#444",
-                      }}
-                    >
-                      {p.entrada ? labels.entradaPrimeira : labels.parcelaN(p.numero)}
-                    </td>
-                    <td
-                      style={{
-                        padding: "8px 12px",
-                        borderBottom: "1px solid #eee",
-                        textAlign: "right",
-                        fontWeight: 700,
-                        color: cor,
-                        fontSize: "13px",
-                      }}
-                    >
-                      {fmtValor(p.valor)}
-                      {usdCell(p.valor)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-
-        {rodapeNota && (
-          <div
-            style={{
-              marginTop: "12px",
-              paddingTop: "10px",
-              fontSize: "11px",
-              color: "#888",
-              fontStyle: "italic",
-              borderTop: "1px solid #eee",
-            }}
-          >
-            {rodapeNota}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// L2Connect — textos bilíngues (inalterado)
-const txt = {
-  pt: {
-    titulo: "Orçamento",
-    data: "Data",
-    numero: "Nº",
-    cliente: "Cliente",
-    email: "E-mail",
-    telefone: "Telefone",
-    servicos: "Serviços",
-    servico: "Serviço / Descrição",
-    valor: "Valor",
-    total: "Total",
-    pagamento: "Condições de Pagamento",
-    entrada: "50% na entrada",
-    entrega: "50% na entrega",
-    nota_blue: "* Valor sujeito à cotação do dólar blue do dia.",
-    ref_dolar: "Valor de referência em dólar blue",
-    validade: "Validade",
-    validade_val: "30 dias",
-    rodape: "Obrigado pela preferência!",
-  },
-  es: {
-    titulo: "Presupuesto",
-    data: "Fecha",
-    numero: "Nro.",
-    cliente: "Cliente",
-    email: "E-mail",
-    telefone: "Teléfono",
-    servicos: "Servicios",
-    servico: "Servicio / Descripción",
-    valor: "Valor",
-    total: "Total",
-    pagamento: "Condiciones de Pago",
-    entrada: "50% a la firma",
-    entrega: "50% a la entrega",
-    nota_blue: "* Valor sujeto a la cotización del dólar blue del día.",
-    ref_dolar: "Valor de referencia en dólar blue",
-    validade: "Validez",
-    validade_val: "30 días",
-    rodape: "¡Gracias por su preferencia!",
-  },
-};
-
-// Zamy Design — textos fixos em espanhol
-const zamy = {
-  titulo: "Presupuesto",
-  data: "Fecha",
-  numero: "Nro.",
-  cliente: "Cliente",
-  servicos: "Servicios",
-  servico: "Servicio / Descripción",
-  valor: "Valor",
-  total: "Total",
-  pagamento: "Condiciones de pago",
-  entrada: "50% al inicio",
-  entrega: "50% a la entrega",
-  nota_blue_ars: "* Valor sujeto a la cotización del dólar blue del día.",
-  nota_blue_usd:
-    "* Los valores en dólares se calculan según la cotización del Dólar Blue del día de emisión del presupuesto.",
-  ref_dolar: "Valor de referencia en dólar blue",
-  validade: "Validez",
-  validade_val: "30 días",
-  rodape: "¡Gracias por su preferencia!",
-  rodape_empresa: "Estudio Creativo Zamy Design | www.zamydesign.com",
-};
-
-// L2Connect Argentina — textos fixos em espanhol, cores L2Connect
-const ar = {
-  titulo: "Presupuesto",
-  data: "Fecha",
-  numero: "Nro.",
-  cliente: "Cliente",
-  servicos: "Servicios",
-  servico: "Servicio / Descripción",
-  valor: "Valor",
-  total: "Total",
-  pagamento: "Condiciones de pago",
-  entrada: "50% al inicio",
-  entrega: "50% a la entrega",
-  nota_blue_ars: "* Valor sujeto a la cotización del dólar blue del día.",
-  nota_blue_usd:
-    "* Los valores en dólares se calculan según la cotización del Dólar Blue del día de emisión del presupuesto.",
-  ref_dolar: "Valor de referencia en dólar blue",
-  validade: "Validez",
-  validade_val: "30 días",
-  rodape: "¡Gracias por su preferencia!",
-  rodape_empresa: "L2Connect | www.l2connect.com.br",
-};
-
-const Z = "#C2185B"; // fúcsia Zamy
-const Za = (a: number) => `rgba(194,24,91,${a})`; // fúcsia com alpha
-
-function gerarNumero() {
-  const now = new Date();
-  const yy = String(now.getFullYear()).slice(2);
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const seq = String(Math.floor(Math.random() * 900) + 100);
-  return `ORC-${yy}${mm}-${seq}`;
-}
-
 function formatDataBR(d: Date) {
   return d.toLocaleDateString("pt-BR");
-}
-
-function fmtBRL(v: number) {
-  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
 }
 
 function fmtARS(v: number) {
@@ -484,6 +133,10 @@ function fmtARS(v: number) {
 
 function fmtUSD(v: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
+}
+
+function fmtBRL(v: number) {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
 }
 
 const selectCls =
@@ -500,8 +153,11 @@ export function OrcamentosManager() {
   const [loadingDolar, setLoadingDolar] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [gerando, setGerando] = useState(false);
-  const [numero, setNumero] = useState("");
+  const [salvando, setSalvando] = useState(false);
+  const [numero, setNumero] = useState(""); // preenchido pelo banco ao salvar
   const [dataHoje, setDataHoje] = useState("");
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const loadClientes = useCallback(async () => {
     const { data } = await supabase.from("clientes").select("*").order("nome");
@@ -523,7 +179,6 @@ export function OrcamentosManager() {
   useEffect(() => {
     loadClientes();
     fetchDolar();
-    setNumero(gerarNumero());
     setDataHoje(formatDataBR(new Date()));
   }, [loadClientes]);
 
@@ -536,7 +191,6 @@ export function OrcamentosManager() {
         moeda: f.moeda === "USD" ? "ARS" : f.moeda,
       }));
     } else {
-      // zamy e l2connect-ar: idioma fixo ES, sem BRL
       setForm((f) => ({
         ...f,
         idioma: "es",
@@ -575,20 +229,14 @@ export function OrcamentosManager() {
   }
 
   const total = form.servicos.reduce((sum, s) => sum + (parseFloat(s.valor) || 0), 0);
-  const totalUSD = cotacaoDolar && total > 0 && form.moeda === "ARS" ? total / cotacaoDolar : null;
+  const totalUSD =
+    cotacaoDolar && total > 0 && form.moeda === "ARS" ? total / cotacaoDolar : null;
 
   const plano = calcularPlano(total, form);
   const simbolo = form.moeda === "BRL" ? "R$" : form.moeda === "USD" ? "US$" : "$";
 
-  // Referência ≈ USD por valor, só quando a moeda é ARS (dólar blue).
-  const usdRef = (v: number): string | null =>
-    form.moeda === "ARS" && cotacaoDolar ? fmtUSD(v / cotacaoDolar) : null;
-
-  const t = txt[form.idioma];
-
   const fmtValor = (v: number): string => {
     if (form.moeda === "BRL") return fmtBRL(v);
-    // Zamy e L2Connect AR: símbolo US$ ou $ com 2 casas decimais, sem conversão
     if (template !== "l2connect") {
       const n = new Intl.NumberFormat("en-US", {
         minimumFractionDigits: 2,
@@ -599,26 +247,74 @@ export function OrcamentosManager() {
     return form.moeda === "ARS" ? fmtARS(v) : fmtUSD(v);
   };
 
+  // Dados usados pela prévia compartilhada (e pelo PDF).
+  const previewData: OrcamentoData = {
+    numero: numero || "—",
+    data: dataHoje,
+    template,
+    idioma: form.idioma,
+    moeda: form.moeda,
+    cliente_nome: form.cliente_nome,
+    cliente_email: form.cliente_email,
+    cliente_telefone: form.cliente_telefone,
+    servicos: form.servicos.map((s) => ({
+      descricao: s.descricao,
+      valor: parseFloat(s.valor) || 0,
+    })),
+    plano,
+    total,
+    nota: form.nota,
+    cotacaoDolar,
+  };
+
+  async function salvarOrcamento() {
+    setSalvando(true);
+    setSaveMsg(null);
+    setError(null);
+
+    const payload = {
+      cliente_nome: form.cliente_nome.trim(),
+      cliente_email: form.cliente_email.trim() || null,
+      cliente_telefone: form.cliente_telefone.trim() || null,
+      template,
+      idioma: form.idioma,
+      moeda: form.moeda,
+      cotacao_dolar: form.moeda === "ARS" ? cotacaoDolar : null,
+      total,
+      plano_pagamento: plano,
+      servicos: form.servicos
+        .filter((s) => s.descricao || s.valor)
+        .map((s) => ({ descricao: s.descricao, valor: parseFloat(s.valor) || 0 })),
+      nota: form.nota.trim() || null,
+      status: "rascunho",
+    };
+
+    const { data: row, error: e } = await supabase
+      .from("orcamentos")
+      .insert(payload)
+      .select("numero")
+      .single();
+
+    setSalvando(false);
+    if (e) {
+      setError(e.message);
+      return;
+    }
+    if (row?.numero) setNumero(row.numero);
+    setSaveMsg(
+      `Orçamento ${row?.numero ?? ""} salvo com sucesso! Já aparece no histórico.`
+    );
+  }
+
   async function gerarPDF() {
     if (!previewRef.current) return;
     setGerando(true);
     try {
-      const { default: html2canvas } = await import("html2canvas");
-      const { jsPDF } = await import("jspdf");
-
-      const canvas = await html2canvas(previewRef.current, {
-        scale: 2,
-        backgroundColor: "#ffffff",
-        useCORS: true,
-      });
-
-      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      const imgWidth = 210;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, imgWidth, imgHeight);
-
       const prefix = template === "l2connect" ? "orcamento" : "presupuesto";
-      pdf.save(`${prefix}-${form.cliente_nome || "cliente"}-${numero}.pdf`);
+      await gerarPdfDoElemento(
+        previewRef.current,
+        `${prefix}-${form.cliente_nome || "cliente"}-${numero || "orcamento"}.pdf`
+      );
     } catch (e) {
       console.error(e);
     }
@@ -628,8 +324,16 @@ export function OrcamentosManager() {
   return (
     <div>
       <PageHeader
-        title="Orçamentos"
+        title="Novo orçamento"
         description="Gere orçamentos profissionais em PDF em português ou espanhol."
+        action={
+          <Button asChild variant="outline">
+            <Link href="/dashboard/orcamentos">
+              <History className="size-4" />
+              Ver histórico
+            </Link>
+          </Button>
+        }
       />
 
       {/* ── Seletor de template ── */}
@@ -720,7 +424,9 @@ export function OrcamentosManager() {
                 <Input
                   id="cli_tel"
                   value={form.cliente_telefone}
-                  onChange={(e) => setForm((f) => ({ ...f, cliente_telefone: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, cliente_telefone: e.target.value }))
+                  }
                   placeholder="+55 11 99999-9999"
                 />
               </div>
@@ -787,7 +493,6 @@ export function OrcamentosManager() {
               Condições de Pagamento
             </h3>
 
-            {/* Opção de pagamento */}
             <div className="grid grid-cols-3 gap-2">
               {(
                 [
@@ -801,9 +506,7 @@ export function OrcamentosManager() {
                   <button
                     key={opt.v}
                     type="button"
-                    onClick={() =>
-                      setForm((f) => ({ ...f, opcao_pagamento: opt.v }))
-                    }
+                    onClick={() => setForm((f) => ({ ...f, opcao_pagamento: opt.v }))}
                     className={`rounded-lg border px-3 py-2 text-xs font-semibold transition-all ${
                       ativo
                         ? "border-primary bg-primary text-white"
@@ -816,7 +519,6 @@ export function OrcamentosManager() {
               })}
             </div>
 
-            {/* Com entrada — percentual */}
             {form.opcao_pagamento === "entrada" && (
               <div className="space-y-2">
                 <Label htmlFor="pct_entrada">Percentual de entrada (%)</Label>
@@ -843,7 +545,6 @@ export function OrcamentosManager() {
               </div>
             )}
 
-            {/* Parcelado */}
             {form.opcao_pagamento === "parcelado" && (
               <div className="space-y-3">
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -853,9 +554,7 @@ export function OrcamentosManager() {
                       id="parcelas"
                       className={selectCls}
                       value={form.parcelas}
-                      onChange={(e) =>
-                        setForm((f) => ({ ...f, parcelas: e.target.value }))
-                      }
+                      onChange={(e) => setForm((f) => ({ ...f, parcelas: e.target.value }))}
                     >
                       {Array.from({ length: 11 }, (_, i) => i + 2).map((n) => (
                         <option key={n} value={String(n)}>
@@ -878,9 +577,7 @@ export function OrcamentosManager() {
                       }
                     >
                       <option value="iguais">Parcelas iguais</option>
-                      <option value="entrada_diferenciada">
-                        Entrada diferenciada
-                      </option>
+                      <option value="entrada_diferenciada">Entrada diferenciada</option>
                     </select>
                   </div>
                 </div>
@@ -1009,8 +706,20 @@ export function OrcamentosManager() {
             </div>
           </section>
 
+          {/* Mensagens */}
+          {saveMsg && (
+            <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
+              {saveMsg}
+            </p>
+          )}
+          {error && (
+            <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+
           {/* Ações */}
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <Button
               type="button"
               variant="outline"
@@ -1019,6 +728,16 @@ export function OrcamentosManager() {
             >
               <Eye className="size-4" />
               {showPreview ? "Ocultar prévia" : "Ver prévia"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={salvarOrcamento}
+              disabled={salvando || !form.cliente_nome || total === 0}
+              className="flex-1"
+            >
+              <Save className="size-4" />
+              {salvando ? "Salvando..." : "Salvar orçamento"}
             </Button>
             <Button
               type="button"
@@ -1037,740 +756,7 @@ export function OrcamentosManager() {
           <p className="mb-2 text-xs text-muted-foreground">
             Prévia do documento — o PDF terá aparência idêntica.
           </p>
-
-          {/* ════ L2CONNECT PREVIEW ════ */}
-          {template === "l2connect" && (
-            <div
-              ref={previewRef}
-              style={{
-                background: "#ffffff",
-                color: "#111111",
-                fontFamily: "Helvetica Neue, Arial, sans-serif",
-                padding: "40px",
-                minHeight: "297mm",
-                fontSize: "13px",
-                lineHeight: "1.5",
-              }}
-            >
-              {/* Header */}
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  marginBottom: "32px",
-                  paddingBottom: "24px",
-                  borderBottom: "2px solid #0066FF",
-                }}
-              >
-                <div>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src="/l2connect-logo-dark.png?v=4"
-                    alt="L2Connect"
-                    style={{ height: "56px", width: "auto", display: "block" }}
-                    crossOrigin="anonymous"
-                  />
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div
-                    style={{
-                      fontSize: "20px",
-                      fontWeight: "700",
-                      color: "#111",
-                      textTransform: "uppercase",
-                      letterSpacing: "1px",
-                    }}
-                  >
-                    {t.titulo}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px", marginTop: "4px" }}>
-                    {t.numero} {numero}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px" }}>
-                    {t.data}: {dataHoje}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px" }}>
-                    {t.validade}: {t.validade_val}
-                  </div>
-                </div>
-              </div>
-
-              {/* Cliente */}
-              <div
-                style={{
-                  marginBottom: "28px",
-                  background: "#f8f9ff",
-                  borderRadius: "8px",
-                  padding: "16px",
-                  borderLeft: "4px solid #0066FF",
-                }}
-              >
-                <div style={{ fontWeight: "700", color: "#0066FF", marginBottom: "8px" }}>
-                  {t.cliente}
-                </div>
-                <div style={{ fontWeight: "600" }}>
-                  {form.cliente_nome || "Nome do Cliente"}
-                </div>
-                {form.cliente_email && (
-                  <div style={{ color: "#555" }}>{form.cliente_email}</div>
-                )}
-                {form.cliente_telefone && (
-                  <div style={{ color: "#555" }}>{form.cliente_telefone}</div>
-                )}
-              </div>
-
-              {/* Serviços */}
-              <div style={{ marginBottom: "28px" }}>
-                <div
-                  style={{
-                    fontWeight: "700",
-                    color: "#0066FF",
-                    marginBottom: "12px",
-                    textTransform: "uppercase",
-                    fontSize: "11px",
-                    letterSpacing: "1px",
-                  }}
-                >
-                  {t.servicos}
-                </div>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ background: "#0066FF", color: "#fff" }}>
-                      <th
-                        style={{
-                          padding: "10px 12px",
-                          textAlign: "left",
-                          fontWeight: "600",
-                          fontSize: "12px",
-                        }}
-                      >
-                        {t.servico}
-                      </th>
-                      <th
-                        style={{
-                          padding: "10px 12px",
-                          textAlign: "right",
-                          fontWeight: "600",
-                          fontSize: "12px",
-                          width: "140px",
-                        }}
-                      >
-                        {t.valor}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {form.servicos
-                      .filter((s) => s.descricao || s.valor)
-                      .map((s, i) => (
-                        <tr
-                          key={s.id}
-                          style={{ background: i % 2 === 0 ? "#fff" : "#f8f9ff" }}
-                        >
-                          <td
-                            style={{ padding: "10px 12px", borderBottom: "1px solid #eee" }}
-                          >
-                            {s.descricao || `Serviço ${i + 1}`}
-                          </td>
-                          <td
-                            style={{
-                              padding: "10px 12px",
-                              textAlign: "right",
-                              borderBottom: "1px solid #eee",
-                            }}
-                          >
-                            {fmtValor(parseFloat(s.valor) || 0)}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{ background: "#f0f4ff" }}>
-                      <td
-                        style={{ padding: "12px", fontWeight: "700", fontSize: "14px" }}
-                      >
-                        {t.total}
-                      </td>
-                      <td
-                        style={{
-                          padding: "12px",
-                          textAlign: "right",
-                          fontWeight: "800",
-                          fontSize: "16px",
-                          color: "#0066FF",
-                        }}
-                      >
-                        {fmtValor(total)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-
-              {/* Condições de pagamento */}
-              <CondicoesPagamento
-                plano={plano}
-                titulo={t.pagamento}
-                labels={PAG[form.idioma]}
-                total={total}
-                fmtValor={fmtValor}
-                usdRef={usdRef}
-                cor="#0066FF"
-                corHeaderBg="#f0f4ff"
-                corBorda="#dde3ff"
-                corCardBorda="#dde3ff"
-                rodapeNota={
-                  form.moeda === "ARS"
-                    ? `${
-                        cotacaoDolar
-                          ? `${t.ref_dolar}: 1 USD = ${fmtARS(cotacaoDolar)}. `
-                          : ""
-                      }${t.nota_blue}`
-                    : null
-                }
-              />
-
-              {/* Nota adicional */}
-              {form.nota && (
-                <div
-                  style={{
-                    marginBottom: "24px",
-                    padding: "12px 16px",
-                    background: "#fffbf0",
-                    border: "1px solid #ffe080",
-                    borderRadius: "8px",
-                    fontSize: "12px",
-                    color: "#555",
-                  }}
-                >
-                  {form.nota}
-                </div>
-              )}
-
-              {/* Rodapé */}
-              <div
-                style={{
-                  marginTop: "40px",
-                  textAlign: "center",
-                  borderTop: "1px solid #eee",
-                  paddingTop: "16px",
-                }}
-              >
-                <div style={{ color: "#888", fontSize: "12px" }}>{t.rodape}</div>
-                <div
-                  style={{
-                    marginTop: "6px",
-                    color: "#aaa",
-                    fontSize: "10px",
-                    letterSpacing: "0.3px",
-                  }}
-                >
-                  L2Connect | CNPJ: 65.433.467/0001-70 | www.l2connect.com.br
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ════ L2CONNECT ARGENTINA PREVIEW ════ */}
-          {template === "l2connect-ar" && (
-            <div
-              ref={previewRef}
-              style={{
-                background: "#ffffff",
-                color: "#111111",
-                fontFamily: "Helvetica Neue, Arial, sans-serif",
-                padding: "40px",
-                minHeight: "297mm",
-                fontSize: "13px",
-                lineHeight: "1.5",
-              }}
-            >
-              {/* Header */}
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  marginBottom: "32px",
-                  paddingBottom: "24px",
-                  borderBottom: "2px solid #0066FF",
-                }}
-              >
-                <div>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src="/l2connect-logo-dark.png?v=4"
-                    alt="L2Connect"
-                    style={{ height: "56px", width: "auto", display: "block" }}
-                    crossOrigin="anonymous"
-                  />
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div
-                    style={{
-                      fontSize: "20px",
-                      fontWeight: "700",
-                      color: "#111",
-                      textTransform: "uppercase",
-                      letterSpacing: "1px",
-                    }}
-                  >
-                    {ar.titulo}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px", marginTop: "4px" }}>
-                    {ar.numero} {numero}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px" }}>
-                    {ar.data}: {dataHoje}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px" }}>
-                    {ar.validade}: {ar.validade_val}
-                  </div>
-                </div>
-              </div>
-
-              {/* Cliente */}
-              <div
-                style={{
-                  marginBottom: "28px",
-                  background: "#f8f9ff",
-                  borderRadius: "8px",
-                  padding: "16px",
-                  borderLeft: "4px solid #0066FF",
-                }}
-              >
-                <div style={{ fontWeight: "700", color: "#0066FF", marginBottom: "8px" }}>
-                  {ar.cliente}
-                </div>
-                <div style={{ fontWeight: "600" }}>
-                  {form.cliente_nome || "Nombre del Cliente"}
-                </div>
-                {form.cliente_email && (
-                  <div style={{ color: "#555" }}>{form.cliente_email}</div>
-                )}
-                {form.cliente_telefone && (
-                  <div style={{ color: "#555" }}>{form.cliente_telefone}</div>
-                )}
-              </div>
-
-              {/* Servicios */}
-              <div style={{ marginBottom: "28px" }}>
-                <div
-                  style={{
-                    fontWeight: "700",
-                    color: "#0066FF",
-                    marginBottom: "12px",
-                    textTransform: "uppercase",
-                    fontSize: "11px",
-                    letterSpacing: "1px",
-                  }}
-                >
-                  {ar.servicos}
-                </div>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ background: "#0066FF", color: "#fff" }}>
-                      <th
-                        style={{
-                          padding: "10px 12px",
-                          textAlign: "left",
-                          fontWeight: "600",
-                          fontSize: "12px",
-                        }}
-                      >
-                        {ar.servico}
-                      </th>
-                      <th
-                        style={{
-                          padding: "10px 12px",
-                          textAlign: "right",
-                          fontWeight: "600",
-                          fontSize: "12px",
-                          width: "140px",
-                        }}
-                      >
-                        {ar.valor}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {form.servicos
-                      .filter((s) => s.descricao || s.valor)
-                      .map((s, i) => (
-                        <tr
-                          key={s.id}
-                          style={{ background: i % 2 === 0 ? "#fff" : "#f8f9ff" }}
-                        >
-                          <td
-                            style={{ padding: "10px 12px", borderBottom: "1px solid #eee" }}
-                          >
-                            {s.descricao || `Servicio ${i + 1}`}
-                          </td>
-                          <td
-                            style={{
-                              padding: "10px 12px",
-                              textAlign: "right",
-                              borderBottom: "1px solid #eee",
-                            }}
-                          >
-                            {fmtValor(parseFloat(s.valor) || 0)}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{ background: "#f0f4ff" }}>
-                      <td
-                        style={{ padding: "12px", fontWeight: "700", fontSize: "14px" }}
-                      >
-                        {ar.total}
-                      </td>
-                      <td
-                        style={{
-                          padding: "12px",
-                          textAlign: "right",
-                          fontWeight: "800",
-                          fontSize: "16px",
-                          color: "#0066FF",
-                        }}
-                      >
-                        {fmtValor(total)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-
-              {/* Condiciones de pago */}
-              <CondicoesPagamento
-                plano={plano}
-                titulo={ar.pagamento}
-                labels={PAG.es}
-                total={total}
-                fmtValor={fmtValor}
-                usdRef={usdRef}
-                cor="#0066FF"
-                corHeaderBg="#f0f4ff"
-                corBorda="#dde3ff"
-                corCardBorda="#dde3ff"
-                rodapeNota={
-                  form.moeda === "ARS"
-                    ? `${
-                        cotacaoDolar
-                          ? `${ar.ref_dolar}: 1 USD = ${fmtARS(cotacaoDolar)}. `
-                          : ""
-                      }${ar.nota_blue_ars}`
-                    : null
-                }
-              />
-
-              {/* Nota adicional */}
-              {form.nota && (
-                <div
-                  style={{
-                    marginBottom: "24px",
-                    padding: "12px 16px",
-                    background: "#fffbf0",
-                    border: "1px solid #ffe080",
-                    borderRadius: "8px",
-                    fontSize: "12px",
-                    color: "#555",
-                  }}
-                >
-                  {form.nota}
-                </div>
-              )}
-
-              {/* Rodapé */}
-              <div
-                style={{
-                  marginTop: "40px",
-                  textAlign: "center",
-                  borderTop: "1px solid #eee",
-                  paddingTop: "16px",
-                }}
-              >
-                <div style={{ color: "#888", fontSize: "12px" }}>{ar.rodape}</div>
-                <div
-                  style={{
-                    marginTop: "6px",
-                    color: "#aaa",
-                    fontSize: "10px",
-                    letterSpacing: "0.3px",
-                  }}
-                >
-                  {ar.rodape_empresa}
-                </div>
-                {form.moeda === "USD" && (
-                  <div
-                    style={{
-                      marginTop: "6px",
-                      color: "#aaa",
-                      fontSize: "10px",
-                      fontStyle: "italic",
-                    }}
-                  >
-                    {ar.nota_blue_usd}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ════ ZAMY DESIGN PREVIEW ════ */}
-          {template === "zamy" && (
-            <div
-              ref={previewRef}
-              style={{
-                background: "#ffffff",
-                color: "#111111",
-                fontFamily: "Helvetica Neue, Arial, sans-serif",
-                padding: "40px",
-                minHeight: "297mm",
-                fontSize: "13px",
-                lineHeight: "1.5",
-              }}
-            >
-              {/* Header */}
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  marginBottom: "32px",
-                  paddingBottom: "24px",
-                  borderBottom: `2px solid ${Z}`,
-                }}
-              >
-                <div>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src="/Logotipo.Zamy.jpeg"
-                    alt="Zamy Design"
-                    style={{ height: "56px", width: "auto", display: "block" }}
-                    crossOrigin="anonymous"
-                  />
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div
-                    style={{
-                      fontSize: "20px",
-                      fontWeight: "700",
-                      color: "#111",
-                      textTransform: "uppercase",
-                      letterSpacing: "1px",
-                    }}
-                  >
-                    {zamy.titulo}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px", marginTop: "4px" }}>
-                    {zamy.numero} {numero}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px" }}>
-                    {zamy.data}: {dataHoje}
-                  </div>
-                  <div style={{ color: "#666", fontSize: "12px" }}>
-                    {zamy.validade}: {zamy.validade_val}
-                  </div>
-                </div>
-              </div>
-
-              {/* Cliente */}
-              <div
-                style={{
-                  marginBottom: "28px",
-                  background: Za(0.06),
-                  borderRadius: "8px",
-                  padding: "16px",
-                  borderLeft: `4px solid ${Z}`,
-                }}
-              >
-                <div style={{ fontWeight: "700", color: Z, marginBottom: "8px" }}>
-                  {zamy.cliente}
-                </div>
-                <div style={{ fontWeight: "600" }}>
-                  {form.cliente_nome || "Nombre del Cliente"}
-                </div>
-                {form.cliente_email && (
-                  <div style={{ color: "#555" }}>{form.cliente_email}</div>
-                )}
-                {form.cliente_telefone && (
-                  <div style={{ color: "#555" }}>{form.cliente_telefone}</div>
-                )}
-              </div>
-
-              {/* Servicios */}
-              <div style={{ marginBottom: "28px" }}>
-                <div
-                  style={{
-                    fontWeight: "700",
-                    color: Z,
-                    marginBottom: "12px",
-                    textTransform: "uppercase",
-                    fontSize: "11px",
-                    letterSpacing: "1px",
-                  }}
-                >
-                  {zamy.servicos}
-                </div>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ background: Z, color: "#fff" }}>
-                      <th
-                        style={{
-                          padding: "10px 12px",
-                          textAlign: "left",
-                          fontWeight: "600",
-                          fontSize: "12px",
-                        }}
-                      >
-                        {zamy.servico}
-                      </th>
-                      <th
-                        style={{
-                          padding: "10px 12px",
-                          textAlign: "right",
-                          fontWeight: "600",
-                          fontSize: "12px",
-                          width: "140px",
-                        }}
-                      >
-                        {zamy.valor}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {form.servicos
-                      .filter((s) => s.descricao || s.valor)
-                      .map((s, i) => (
-                        <tr
-                          key={s.id}
-                          style={{ background: i % 2 === 0 ? "#fff" : Za(0.04) }}
-                        >
-                          <td
-                            style={{
-                              padding: "10px 12px",
-                              borderBottom: `1px solid ${Za(0.15)}`,
-                            }}
-                          >
-                            {s.descricao || `Servicio ${i + 1}`}
-                          </td>
-                          <td
-                            style={{
-                              padding: "10px 12px",
-                              textAlign: "right",
-                              borderBottom: `1px solid ${Za(0.15)}`,
-                            }}
-                          >
-                            {fmtValor(parseFloat(s.valor) || 0)}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                  <tfoot>
-                    <tr style={{ background: Za(0.08) }}>
-                      <td
-                        style={{
-                          padding: "12px",
-                          fontWeight: "700",
-                          fontSize: "14px",
-                          color: Z,
-                        }}
-                      >
-                        {zamy.total}
-                      </td>
-                      <td
-                        style={{
-                          padding: "12px",
-                          textAlign: "right",
-                          fontWeight: "800",
-                          fontSize: "16px",
-                          color: Z,
-                        }}
-                      >
-                        {fmtValor(total)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-
-              {/* Condiciones de pago */}
-              <CondicoesPagamento
-                plano={plano}
-                titulo={zamy.pagamento}
-                labels={PAG.es}
-                total={total}
-                fmtValor={fmtValor}
-                usdRef={usdRef}
-                cor={Z}
-                corHeaderBg={Za(0.1)}
-                corBorda={Za(0.3)}
-                corCardBorda={Za(0.25)}
-                rodapeNota={
-                  form.moeda === "ARS"
-                    ? `${
-                        cotacaoDolar
-                          ? `${zamy.ref_dolar}: 1 USD = ${fmtARS(cotacaoDolar)}. `
-                          : ""
-                      }${zamy.nota_blue_ars}`
-                    : null
-                }
-              />
-
-              {/* Nota adicional */}
-              {form.nota && (
-                <div
-                  style={{
-                    marginBottom: "24px",
-                    padding: "12px 16px",
-                    background: Za(0.05),
-                    border: `1px solid ${Za(0.2)}`,
-                    borderRadius: "8px",
-                    fontSize: "12px",
-                    color: "#555",
-                  }}
-                >
-                  {form.nota}
-                </div>
-              )}
-
-              {/* Rodapé */}
-              <div
-                style={{
-                  marginTop: "40px",
-                  textAlign: "center",
-                  borderTop: `1px solid ${Z}`,
-                  paddingTop: "16px",
-                }}
-              >
-                <div style={{ color: "#888", fontSize: "12px" }}>{zamy.rodape}</div>
-                <div
-                  style={{
-                    marginTop: "6px",
-                    color: "#aaa",
-                    fontSize: "10px",
-                    letterSpacing: "0.3px",
-                  }}
-                >
-                  {zamy.rodape_empresa}
-                </div>
-                {form.moeda === "USD" && (
-                  <div
-                    style={{
-                      marginTop: "6px",
-                      color: "#aaa",
-                      fontSize: "10px",
-                      fontStyle: "italic",
-                    }}
-                  >
-                    {zamy.nota_blue_usd}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          <OrcamentoPreview data={previewData} previewRef={previewRef} />
         </div>
       </div>
     </div>
