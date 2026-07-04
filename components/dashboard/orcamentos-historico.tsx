@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Plus, FileDown, Trash2 } from "lucide-react";
+import { Plus, FileDown, Trash2, Pencil } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import type { Orcamento, OrcamentoStatus } from "@/lib/types";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -236,6 +236,12 @@ export function OrcamentosHistorico() {
                       ))}
                     </select>
                     <div className="flex items-center gap-2">
+                      <Button asChild variant="outline" size="sm">
+                        <Link href={`/dashboard/orcamentos/novo?id=${o.id}`}>
+                          <Pencil className="size-4" />
+                          Editar
+                        </Link>
+                      </Button>
                       <Button
                         type="button"
                         variant="outline"
@@ -331,6 +337,12 @@ export function OrcamentosHistorico() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-2">
+                          <Button asChild variant="outline" size="sm">
+                            <Link href={`/dashboard/orcamentos/novo?id=${o.id}`}>
+                              <Pencil className="size-4" />
+                              Editar
+                            </Link>
+                          </Button>
                           <Button
                             type="button"
                             variant="outline"

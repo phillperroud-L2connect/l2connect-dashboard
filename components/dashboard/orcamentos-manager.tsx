@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Plus, Trash2, FileDown, Eye, Save, History } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import type { Cliente } from "@/lib/types";
+import type { Cliente, Orcamento } from "@/lib/types";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -118,6 +119,60 @@ function calcularPlano(total: number, form: FormState): PlanoPagamento {
   return { tipo: "avista" };
 }
 
+/** Reconstrói o estado do formulário a partir de um orçamento salvo (edição). */
+function formFromOrcamento(o: Orcamento): FormState {
+  const servicos: ServicoItem[] = (Array.isArray(o.servicos) ? o.servicos : []).map(
+    (s) => ({
+      id: crypto.randomUUID(),
+      descricao: s.descricao ?? "",
+      valor: s.valor != null ? String(s.valor) : "",
+    })
+  );
+
+  const base: FormState = {
+    ...emptyForm,
+    cliente_id: "",
+    cliente_nome: o.cliente_nome ?? "",
+    cliente_email: o.cliente_email ?? "",
+    cliente_telefone: o.cliente_telefone ?? "",
+    idioma: o.idioma,
+    moeda: o.moeda,
+    servicos: servicos.length ? servicos : emptyForm.servicos,
+    nota: o.nota ?? "",
+  };
+
+  const plano = o.plano_pagamento as PlanoPagamento | null;
+  if (!plano) return base;
+
+  if (plano.tipo === "avista") return { ...base, opcao_pagamento: "avista" };
+
+  if (plano.tipo === "entrada")
+    return {
+      ...base,
+      opcao_pagamento: "entrada",
+      percentual_entrada: String(Math.round(plano.pct)),
+    };
+
+  // parcelado
+  if (plano.subtipo === "entrada_diferenciada") {
+    const entrada = plano.parcelas[0]?.valor ?? 0;
+    return {
+      ...base,
+      opcao_pagamento: "parcelado",
+      parcelas: String(plano.n),
+      tipo_parcelamento: "entrada_diferenciada",
+      entrada_tipo: "valor",
+      entrada_valor: String(entrada),
+    };
+  }
+  return {
+    ...base,
+    opcao_pagamento: "parcelado",
+    parcelas: String(plano.n),
+    tipo_parcelamento: "iguais",
+  };
+}
+
 function formatDataBR(d: Date) {
   return d.toLocaleDateString("pt-BR");
 }
@@ -145,6 +200,8 @@ const selectCls =
 export function OrcamentosManager() {
   const supabase = createClient();
   const previewRef = useRef<HTMLDivElement>(null);
+  const searchParams = useSearchParams();
+  const editId = searchParams.get("id");
 
   const [template, setTemplate] = useState<Template>("l2connect");
   const [form, setForm] = useState<FormState>(emptyForm);
@@ -154,6 +211,7 @@ export function OrcamentosManager() {
   const [showPreview, setShowPreview] = useState(false);
   const [gerando, setGerando] = useState(false);
   const [salvando, setSalvando] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [numero, setNumero] = useState(""); // preenchido pelo banco ao salvar
   const [dataHoje, setDataHoje] = useState("");
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
@@ -181,6 +239,34 @@ export function OrcamentosManager() {
     fetchDolar();
     setDataHoje(formatDataBR(new Date()));
   }, [loadClientes]);
+
+  // Edição: carrega o orçamento salvo quando há ?id= na URL.
+  useEffect(() => {
+    if (!editId) return;
+    let active = true;
+    (async () => {
+      const { data, error: e } = await supabase
+        .from("orcamentos")
+        .select("*")
+        .eq("id", editId)
+        .single();
+      if (!active) return;
+      if (e || !data) {
+        setError("Não foi possível carregar o orçamento para edição.");
+        return;
+      }
+      const o = data as Orcamento;
+      setEditingId(o.id);
+      setTemplate(o.template);
+      setNumero(o.numero);
+      setDataHoje(formatDataBR(new Date(o.created_at)));
+      if (o.moeda === "ARS" && o.cotacao_dolar) setCotacaoDolar(o.cotacao_dolar);
+      setForm(formFromOrcamento(o));
+    })();
+    return () => {
+      active = false;
+    };
+  }, [editId, supabase]);
 
   function switchTemplate(t: Template) {
     setTemplate(t);
@@ -272,7 +358,8 @@ export function OrcamentosManager() {
     setSaveMsg(null);
     setError(null);
 
-    const payload = {
+    // Campos comuns a criação e edição (status e numero não são alterados na edição).
+    const dados = {
       cliente_nome: form.cliente_nome.trim(),
       cliente_email: form.cliente_email.trim() || null,
       cliente_telefone: form.cliente_telefone.trim() || null,
@@ -286,13 +373,26 @@ export function OrcamentosManager() {
         .filter((s) => s.descricao || s.valor)
         .map((s) => ({ descricao: s.descricao, valor: parseFloat(s.valor) || 0 })),
       nota: form.nota.trim() || null,
-      status: "rascunho",
     };
+
+    if (editingId) {
+      const { error: e } = await supabase
+        .from("orcamentos")
+        .update(dados)
+        .eq("id", editingId);
+      setSalvando(false);
+      if (e) {
+        setError(e.message);
+        return;
+      }
+      setSaveMsg(`Orçamento ${numero} atualizado com sucesso!`);
+      return;
+    }
 
     const { data: row, error: e } = await supabase
       .from("orcamentos")
-      .insert(payload)
-      .select("numero")
+      .insert({ ...dados, status: "rascunho" })
+      .select("id, numero")
       .single();
 
     setSalvando(false);
@@ -301,6 +401,7 @@ export function OrcamentosManager() {
       return;
     }
     if (row?.numero) setNumero(row.numero);
+    if (row?.id) setEditingId(String(row.id)); // salvar de novo vira atualização
     setSaveMsg(
       `Orçamento ${row?.numero ?? ""} salvo com sucesso! Já aparece no histórico.`
     );
@@ -324,7 +425,7 @@ export function OrcamentosManager() {
   return (
     <div>
       <PageHeader
-        title="Novo orçamento"
+        title={editingId ? `Editar orçamento ${numero}` : "Novo orçamento"}
         description="Gere orçamentos profissionais em PDF em português ou espanhol."
         action={
           <Button asChild variant="outline">
@@ -737,7 +838,11 @@ export function OrcamentosManager() {
               className="flex-1"
             >
               <Save className="size-4" />
-              {salvando ? "Salvando..." : "Salvar orçamento"}
+              {salvando
+                ? "Salvando..."
+                : editingId
+                  ? "Salvar alterações"
+                  : "Salvar orçamento"}
             </Button>
             <Button
               type="button"
