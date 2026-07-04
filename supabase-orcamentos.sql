@@ -86,11 +86,11 @@ CREATE TRIGGER trg_gerar_numero_orcamento
   EXECUTE FUNCTION public.gerar_numero_orcamento();
 
 -- -----------------------------------------------------------------------------
--- 4. PERMISSÕES (GRANT) — SELECT / INSERT / UPDATE para authenticated
---    (sem DELETE por padrão; o contador é acessado só pela função definer)
+-- 4. PERMISSÕES (GRANT) — SELECT / INSERT / UPDATE / DELETE para authenticated
+--    (o contador é acessado só pela função SECURITY DEFINER)
 -- -----------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA public TO authenticated;
-GRANT SELECT, INSERT, UPDATE ON public.orcamentos TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.orcamentos TO authenticated;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO authenticated;
 
 REVOKE ALL ON public.orcamentos          FROM anon;

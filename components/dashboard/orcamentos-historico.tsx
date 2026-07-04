@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Plus, FileDown } from "lucide-react";
+import { Plus, FileDown, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import type { Orcamento, OrcamentoStatus } from "@/lib/types";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -144,6 +144,22 @@ export function OrcamentosHistorico() {
     }
   }
 
+  async function excluirOrcamento(o: Orcamento) {
+    if (
+      !confirm(
+        `Excluir o orçamento ${o.numero} (${o.cliente_nome})? Esta ação não pode ser desfeita.`
+      )
+    )
+      return;
+    const anterior = orcamentos;
+    setOrcamentos((list) => list.filter((x) => x.id !== o.id)); // otimista
+    const { error: e } = await supabase.from("orcamentos").delete().eq("id", o.id);
+    if (e) {
+      setError(e.message);
+      setOrcamentos(anterior); // reverte
+    }
+  }
+
   return (
     <div className="overflow-x-hidden">
       <PageHeader
@@ -203,28 +219,43 @@ export function OrcamentosHistorico() {
                   <div className="mt-3 flex items-center justify-between gap-2">
                     <select
                       className={statusSelectCls}
-                      style={{ color: st.color, background: st.bg, borderColor: st.border }}
+                      style={{ color: "#fff", background: st.bg, borderColor: st.border }}
                       value={o.status}
                       onChange={(e) =>
                         mudarStatus(o, e.target.value as OrcamentoStatus)
                       }
                     >
                       {STATUS.map((s) => (
-                        <option key={s.v} value={s.v} style={{ color: "#111" }}>
+                        <option
+                          key={s.v}
+                          value={s.v}
+                          style={{ color: "#fff", background: "#0f0f1c" }}
+                        >
                           {s.label}
                         </option>
                       ))}
                     </select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => regenerarPDF(o)}
-                      disabled={regenId === o.id}
-                    >
-                      <FileDown className="size-4" />
-                      {regenId === o.id ? "Gerando..." : "PDF"}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => regenerarPDF(o)}
+                        disabled={regenId === o.id}
+                      >
+                        <FileDown className="size-4" />
+                        {regenId === o.id ? "Gerando..." : "PDF"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => excluirOrcamento(o)}
+                        aria-label="Excluir orçamento"
+                      >
+                        <Trash2 className="size-4 text-destructive" />
+                      </Button>
+                    </div>
                   </div>
                 </div>
               );
@@ -278,7 +309,7 @@ export function OrcamentosHistorico() {
                         <select
                           className={statusSelectCls}
                           style={{
-                            color: st.color,
+                            color: "#fff",
                             background: st.bg,
                             borderColor: st.border,
                           }}
@@ -288,23 +319,38 @@ export function OrcamentosHistorico() {
                           }
                         >
                           {STATUS.map((s) => (
-                            <option key={s.v} value={s.v} style={{ color: "#111" }}>
+                            <option
+                              key={s.v}
+                              value={s.v}
+                              style={{ color: "#fff", background: "#0f0f1c" }}
+                            >
                               {s.label}
                             </option>
                           ))}
                         </select>
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => regenerarPDF(o)}
-                          disabled={regenId === o.id}
-                        >
-                          <FileDown className="size-4" />
-                          {regenId === o.id ? "Gerando..." : "Regerar PDF"}
-                        </Button>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => regenerarPDF(o)}
+                            disabled={regenId === o.id}
+                          >
+                            <FileDown className="size-4" />
+                            {regenId === o.id ? "Gerando..." : "Regerar PDF"}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => excluirOrcamento(o)}
+                            aria-label="Excluir orçamento"
+                          >
+                            <Trash2 className="size-4 text-destructive" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   );
