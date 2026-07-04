@@ -24,7 +24,7 @@ import {
 const STATUS: { v: OrcamentoStatus; label: string }[] = [
   { v: "rascunho", label: "Rascunho" },
   { v: "enviado", label: "Enviado" },
-  { v: "aprovado", label: "Aprovado" },
+  { v: "aprovado", label: "Pago" },
   { v: "recusado", label: "Recusado" },
 ];
 
