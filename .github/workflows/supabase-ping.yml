@@ -2,7 +2,7 @@ name: Supabase Anti-Pause Ping
 
 on:
   schedule:
-    - cron: '0 10 */5 * *'
+    - cron: '0 10 * * *'
   workflow_dispatch:
 
 jobs:
@@ -12,7 +12,10 @@ jobs:
       - name: Query Supabase - L2Connect Dashboard
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Usa a chave JWT legacy (service_role, formato eyJ...) da aba
+          # "Legacy anon, service_role API keys". As novas chaves sb_secret
+          # não fazem bypass de RLS na API REST e retornam 403.
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY_LEGACY }}
         run: |
           # Remove espaços, tabs e quebras de linha acidentais dos secrets
           SUPABASE_URL=$(printf '%s' "$SUPABASE_URL" | tr -d '[:space:]')
@@ -21,7 +24,7 @@ jobs:
           SUPABASE_URL="${SUPABASE_URL%/}"
 
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
-            echo "❌ Secrets SUPABASE_URL e/ou SUPABASE_SERVICE_ROLE_KEY não configurados"
+            echo "❌ Secrets SUPABASE_URL e/ou SUPABASE_SERVICE_ROLE_KEY_LEGACY não configurados"
             exit 1
           fi
 
@@ -57,7 +60,7 @@ jobs:
               echo "✅ Query executada com sucesso - atividade registrada no banco"
               ;;
             401|403)
-              echo "❌ Autenticação falhou ($http_code) - confira SUPABASE_SERVICE_ROLE_KEY (use a service_role key, não a anon/publishable)"
+              echo "❌ Autenticação falhou ($http_code) - use a service_role JWT legacy (eyJ...) no secret SUPABASE_SERVICE_ROLE_KEY_LEGACY, não a chave sb_secret/anon"
               exit 1
               ;;
             404)
